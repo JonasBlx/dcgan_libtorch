@@ -1,0 +1,52 @@
+/argparse/
+
+# Fichiers binaires et objets
+*.o
+*.obj
+*.exe
+*.out
+*.dll
+*.so
+*.dylib
+
+# Répertoires de construction
+/build/
+/bin/
+/lib/
+/dist/
+
+# Fichiers de l'éditeur/IDE
+/.vscode/
+/.idea/
+/*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.CMakeLists.txt.user
+
+# Fichiers de système
+.DS_Store
+Thumbs.db
+
+# Logs et temporaires
+*.log
+*.tmp
+*.swp
+*.bak
+*.pid
+
+# Makefile / CMake
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+
+# Qt Creator
+*.pro.user
+*.qmake.stash
+*.qmake.cache
+
+# Généraux
+*.out
+*.a
+*.pyc
