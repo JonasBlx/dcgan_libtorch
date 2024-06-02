@@ -48,7 +48,7 @@ struct DiscriminatorImpl : torch::nn::Module {
         x = leaky_relu(conv1(x));
         x = leaky_relu(batch_norm1(conv2(x)));
         x = leaky_relu(batch_norm2(conv3(x)));
-        x = torch::sigmoid(conv4(x));
+        x = conv4(x);  // Removed Sigmoid activation here
         return x;
     }
 };
@@ -60,6 +60,21 @@ void weights_init(torch::nn::Module& module) {
     } else if (auto* bn = module.as<torch::nn::BatchNorm2d>()) {
         torch::nn::init::normal_(bn->weight, 1.0, 0.02);
         torch::nn::init::constant_(bn->bias, 0);
+    }
+}
+
+void print_weights(torch::Tensor tensor, const std::string& name) {
+    auto data = tensor.accessor<float, 4>();
+    std::cout << name << " weights (subset):" << std::endl;
+    for (int i = 0; i < std::min<int>(3, data.size(0)); ++i) {
+        for (int j = 0; j < std::min<int>(3, data.size(1)); ++j) {
+            for (int k = 0; k < std::min<int>(3, data.size(2)); ++k) {
+                for (int l = 0; l < std::min<int>(3, data.size(3)); ++l) {
+                    std::cout << data[i][j][k][l] << " ";
+                }
+            }
+            std::cout << std::endl;
+        }
     }
 }
 
@@ -87,8 +102,8 @@ int main() {
     generator->to(device);
     discriminator->to(device);
 
-    torch::optim::Adam generator_optimizer(generator->parameters(), torch::optim::AdamOptions(2e-3).betas(std::make_tuple(0.5, 0.5)));
-    torch::optim::Adam discriminator_optimizer(discriminator->parameters(), torch::optim::AdamOptions(2e-3).betas(std::make_tuple(0.5, 0.5)));
+    torch::optim::Adam generator_optimizer(generator->parameters(), torch::optim::AdamOptions(2e-4).betas(std::make_tuple(0.5, 0.5)));
+    torch::optim::Adam discriminator_optimizer(discriminator->parameters(), torch::optim::AdamOptions(2e-4).betas(std::make_tuple(0.5, 0.5)));
 
     // Vérifiez si les checkpoints existent et chargez-les si disponibles
     if (std::filesystem::exists("generator-checkpoint.pt") && std::filesystem::exists("discriminator-checkpoint.pt")) {
@@ -107,6 +122,9 @@ int main() {
     auto data_loader = torch::data::make_data_loader(std::move(dataset), torch::data::DataLoaderOptions().batch_size(kBatchSize).workers(2));
     std::cout << "Data loading completed." << std::endl;
 
+    auto previous_discriminator_weights = discriminator->conv1->weight.clone();
+    auto previous_generator_weights = generator->conv1->weight.clone();
+
     for (int64_t epoch = 1; epoch <= kNumberOfEpochs; ++epoch) {
         std::cout << "Starting epoch " << epoch << " of " << kNumberOfEpochs << std::endl;
         int64_t batch_index = 0;
@@ -117,16 +135,16 @@ int main() {
             // Train discriminator with real images
             discriminator->zero_grad();
             auto real_images = batch.data.to(device);
-            auto real_labels = torch::empty(batch.data.size(0), device).uniform_(0.8, 1.0);
+            auto real_labels = torch::empty(batch.data.size(0), device).uniform_(0.8, 1.0); // Lissage des labels pour les vraies images
             auto output_real = discriminator->forward(real_images).reshape(real_labels.sizes());
             auto loss_real = torch::binary_cross_entropy_with_logits(output_real, real_labels);
             loss_real.backward();
 
             // Train discriminator with fake images
             auto noise = torch::randn({batch.data.size(0), kNoiseSize, 1, 1}, device);
-            auto fake_images = generator->forward(noise);
-            auto fake_labels = torch::zeros(batch.data.size(0), device);
-            auto output_fake = discriminator->forward(fake_images.detach()).reshape(fake_labels.sizes());
+            auto fake_images = generator->forward(noise).detach();  // Détacher pour ne pas propager les gradients au générateur
+            auto fake_labels = torch::zeros(batch.data.size(0), device); // Utilisation des labels durs pour les fausses images
+            auto output_fake = discriminator->forward(fake_images).reshape(fake_labels.sizes());
             auto loss_fake = torch::binary_cross_entropy_with_logits(output_fake, fake_labels);
             loss_fake.backward();
 
@@ -135,11 +153,20 @@ int main() {
 
             // Train generator
             generator->zero_grad();
-            fake_labels.fill_(1);
-            output_fake = discriminator->forward(fake_images).reshape(fake_labels.sizes());
-            auto g_loss = torch::binary_cross_entropy_with_logits(output_fake, fake_labels);
+            auto generated_labels = torch::ones(batch.data.size(0), device); // Labels pour tromper le discriminateur
+            auto output_fake_gen = discriminator->forward(generator->forward(noise));  // Passer par le discriminateur pour évaluer les images générées
+            auto g_loss = torch::binary_cross_entropy_with_logits(output_fake_gen.reshape(generated_labels.sizes()), generated_labels);
             g_loss.backward();
             generator_optimizer.step();
+
+            auto discriminator_weight_change = torch::sum(torch::abs(discriminator->conv1->weight - previous_discriminator_weights)).item<float>();
+            auto generator_weight_change = torch::sum(torch::abs(generator->conv1->weight - previous_generator_weights)).item<float>();
+
+            previous_discriminator_weights = discriminator->conv1->weight.clone();
+            previous_generator_weights = generator->conv1->weight.clone();
+
+            std::cout << "Discriminator weight change: " << discriminator_weight_change << std::endl;
+            std::cout << "Generator weight change: " << generator_weight_change << std::endl;
 
             if (batch_index % kCheckpointEvery == 0) {
                 std::cout << "Saving checkpoints at batch " << batch_index << " of epoch " << epoch << std::endl;
